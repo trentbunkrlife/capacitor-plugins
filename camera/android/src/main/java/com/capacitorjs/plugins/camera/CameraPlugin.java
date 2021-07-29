@@ -11,6 +11,7 @@ import android.provider.MediaStore;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
 import androidx.core.content.FileProvider;
+
 import com.getcapacitor.FileUtils;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -23,13 +24,13 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -260,7 +261,7 @@ public class CameraPlugin extends Plugin {
         // Load the image as a Bitmap
         File f = new File(imageFileSavePath);
         BitmapFactory.Options bmOptions = new BitmapFactory.Options();
-        Uri contentUri = Uri.fromFile(f);
+        Uri uri = Uri.fromFile(f);
         Bitmap bitmap = BitmapFactory.decodeFile(imageFileSavePath, bmOptions);
 
         if (bitmap == null) {
@@ -268,7 +269,7 @@ public class CameraPlugin extends Plugin {
             return;
         }
 
-        returnResult(call, bitmap, contentUri);
+        returnResult(call, bitmap, uri);
     }
 
     @ActivityCallback
@@ -279,24 +280,28 @@ public class CameraPlugin extends Plugin {
             return;
         }
 
-        Uri u = data.getData();
+        Uri uri = data.getData();
 
         InputStream imageStream = null;
 
         try {
-            imageStream = getContext().getContentResolver().openInputStream(u);
+            imageStream = getContext().getContentResolver().openInputStream(uri);
             Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
+            // We save a temp image so we don't modify the gallery image
+            Uri newFileUri = saveTemporaryImage(uri, bitmap);
 
             if (bitmap == null) {
                 call.reject("Unable to process bitmap");
                 return;
             }
 
-            returnResult(call, bitmap, u);
+            returnResult(call, bitmap, newFileUri);
         } catch (OutOfMemoryError err) {
             call.reject("Out of memory");
         } catch (FileNotFoundException ex) {
             call.reject("No such image found", ex);
+        } catch(Exception ex) {
+            call.reject("Error saving temp image", ex);
         } finally {
             if (imageStream != null) {
                 try {
@@ -314,54 +319,52 @@ public class CameraPlugin extends Plugin {
         processPickedImage(call, result);
     }
 
-    /**
-     * Save the modified image we've created to a temporary location, so we can
-     * return a URI to it later
-     * @param bitmap
-     * @param contentUri
-     * @param is
-     * @return
-     * @throws IOException
-     */
-    private Uri saveTemporaryImage(Bitmap bitmap, Uri contentUri, InputStream is) throws IOException {
+    private Uri saveTemporaryImage(Uri uri, Bitmap bitmap) throws Exception {
+        OutputStream outStream = null;
+        String filename = getNewFilename(uri);
+        File file = new File(getContext().getCacheDir(), filename);
+        try {
+            outStream = new FileOutputStream(file);
+            bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), outStream);
+            Uri newFileUri = Uri.fromFile(file);
+            ExifWrapper exifWrapper = ImageUtils.getExifData(getContext(), bitmap, uri);
+            exifWrapper.copyExif(newFileUri.getPath());
+            return newFileUri;
+        } catch(Exception ex) {
+            throw ex;
+        } finally {
+            if(outStream != null) {
+                outStream.close();
+            }
+        }
+    }
+
+    private String getNewFilename(Uri contentUri) {
         String filename = Uri.parse(Uri.decode(contentUri.toString())).getLastPathSegment();
         if (!filename.contains(".jpg") && !filename.contains(".jpeg")) {
             filename += "." + (new java.util.Date()).getTime() + ".jpeg";
         }
-        File cacheDir = getContext().getCacheDir();
-        File outFile = new File(cacheDir, filename);
-        FileOutputStream fos = new FileOutputStream(outFile);
-        byte[] buffer = new byte[1024];
-        int len;
-        while ((len = is.read(buffer)) != -1) {
-            fos.write(buffer, 0, len);
-        }
-        fos.close();
-        return Uri.fromFile(outFile);
+        return filename;
     }
 
     /**
      * After processing the image, return the final result back to the caller.
      * @param call
      * @param bitmap
-     * @param u
+     * @param uri
      */
-    private void returnResult(PluginCall call, Bitmap bitmap, Uri u) {
+    private void returnResult(PluginCall call, Bitmap bitmap, Uri uri) {
         try {
-            bitmap = prepareBitmap(bitmap, u);
+            bitmap = prepareBitmap(bitmap, uri);
         } catch (IOException e) {
             call.reject(UNABLE_TO_PROCESS_IMAGE);
             return;
         }
 
-        ExifWrapper exif = ImageUtils.getExifData(getContext(), bitmap, u);
-
-        // Compress the final image and prepare for output to client
-        ByteArrayOutputStream bitmapOutputStream = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), bitmapOutputStream);
+        ExifWrapper exifWrapper = ImageUtils.getExifData(getContext(), bitmap, uri);
 
         if (settings.isAllowEditing() && !isEdited) {
-            editImage(call, bitmap, u, bitmapOutputStream);
+            editImage(call, bitmap, uri);
             return;
         }
 
@@ -376,12 +379,22 @@ public class CameraPlugin extends Plugin {
             }
         }
 
+        // Compress the final image and prepare for output to client
+        ByteArrayOutputStream bitmapOutputStream = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), bitmapOutputStream);
+        try {
+            uri = saveTemporaryImage(uri, bitmap);
+        } catch(Exception ex) {
+            call.reject("Error saving temp image", ex);
+            return;
+        }
+
         if (settings.getResultType() == CameraResultType.BASE64) {
-            returnBase64(call, exif, bitmapOutputStream);
+            returnBase64(call, exifWrapper, bitmapOutputStream);
         } else if (settings.getResultType() == CameraResultType.URI) {
-            returnFileURI(call, exif, bitmap, u, bitmapOutputStream);
+            returnFileURI(call, exifWrapper, uri);
         } else if (settings.getResultType() == CameraResultType.DATAURL) {
-            returnDataUrl(call, exif, bitmapOutputStream);
+            returnDataUrl(call, exifWrapper, bitmapOutputStream);
         } else {
             call.reject(INVALID_RESULT_TYPE_ERROR);
         }
@@ -392,37 +405,13 @@ public class CameraPlugin extends Plugin {
         imageEditedFileSavePath = null;
     }
 
-    private void returnFileURI(PluginCall call, ExifWrapper exif, Bitmap bitmap, Uri u, ByteArrayOutputStream bitmapOutputStream) {
-        Uri newUri = getTempImage(bitmap, u, bitmapOutputStream);
-        exif.copyExif(newUri.getPath());
-        if (newUri != null) {
-            JSObject ret = new JSObject();
-            ret.put("format", "jpeg");
-            ret.put("exif", exif.toJson());
-            ret.put("path", newUri.toString());
-            ret.put("webPath", FileUtils.getPortablePath(getContext(), bridge.getLocalUrl(), newUri));
-            call.resolve(ret);
-        } else {
-            call.reject(UNABLE_TO_PROCESS_IMAGE);
-        }
-    }
-
-    private Uri getTempImage(Bitmap bitmap, Uri u, ByteArrayOutputStream bitmapOutputStream) {
-        ByteArrayInputStream bis = null;
-        Uri newUri = null;
-        try {
-            bis = new ByteArrayInputStream(bitmapOutputStream.toByteArray());
-            newUri = saveTemporaryImage(bitmap, u, bis);
-        } catch (IOException ex) {} finally {
-            if (bis != null) {
-                try {
-                    bis.close();
-                } catch (IOException e) {
-                    Logger.error(getLogTag(), UNABLE_TO_PROCESS_IMAGE, e);
-                }
-            }
-        }
-        return newUri;
+    private void returnFileURI(PluginCall call, ExifWrapper exifWrapper, Uri uri) {
+        JSObject ret = new JSObject();
+        ret.put("format", "jpeg");
+        ret.put("exif", exifWrapper.toJson());
+        ret.put("path", uri.toString());
+        ret.put("webPath", FileUtils.getPortablePath(getContext(), bridge.getLocalUrl(), uri));
+        call.resolve(ret);
     }
 
     /**
@@ -516,7 +505,7 @@ public class CameraPlugin extends Plugin {
         return permissionStates;
     }
 
-    private void editImage(PluginCall call, Bitmap bitmap, Uri uri, ByteArrayOutputStream bitmapOutputStream) {
+    private void editImage(PluginCall call, Bitmap bitmap, Uri uri) {
         Uri origPhotoUri = uri;
         if (imageFileUri != null) {
             origPhotoUri = imageFileUri;
@@ -525,11 +514,16 @@ public class CameraPlugin extends Plugin {
             Intent editIntent = createEditIntent(origPhotoUri, false);
             startActivityForResult(call, editIntent, "processEditedImage");
         } catch (SecurityException ex) {
-            Uri tempImage = getTempImage(bitmap, uri, bitmapOutputStream);
-            Intent editIntent = createEditIntent(tempImage, true);
-            if (editIntent != null) {
-                startActivityForResult(call, editIntent, "processEditedImage");
-            } else {
+            Uri tempImage = null;
+            try {
+                tempImage = saveTemporaryImage(uri, bitmap);
+                Intent editIntent = createEditIntent(tempImage, true);
+                if (editIntent != null) {
+                    startActivityForResult(call, editIntent, "processEditedImage");
+                } else {
+                    call.reject(IMAGE_EDIT_ERROR);
+                }
+            } catch (Exception e) {
                 call.reject(IMAGE_EDIT_ERROR);
             }
         } catch (Exception ex) {
