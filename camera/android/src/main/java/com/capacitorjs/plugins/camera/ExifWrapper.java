@@ -7,7 +7,7 @@ import com.getcapacitor.JSObject;
 
 public class ExifWrapper {
 
-    private final ExifInterface exif;
+    public final ExifInterface exif;
     private final String[] attributes = new String[] {
         TAG_APERTURE_VALUE,
         TAG_ARTIST,

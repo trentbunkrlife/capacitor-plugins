@@ -269,7 +269,7 @@ public class CameraPlugin extends Plugin {
             return;
         }
 
-        returnResult(call, bitmap, uri);
+        returnResult(call, uri);
     }
 
     @ActivityCallback
@@ -287,6 +287,7 @@ public class CameraPlugin extends Plugin {
         try {
             imageStream = getContext().getContentResolver().openInputStream(uri);
             Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
+
             // We save a temp image so we don't modify the gallery image
             Uri newFileUri = saveTemporaryImage(uri, bitmap);
 
@@ -295,7 +296,7 @@ public class CameraPlugin extends Plugin {
                 return;
             }
 
-            returnResult(call, bitmap, newFileUri);
+            returnResult(call, newFileUri);
         } catch (OutOfMemoryError err) {
             call.reject("Out of memory");
         } catch (FileNotFoundException ex) {
@@ -325,13 +326,11 @@ public class CameraPlugin extends Plugin {
         File file = new File(getContext().getCacheDir(), filename);
         try {
             outStream = new FileOutputStream(file);
-            bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), outStream);
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 100, outStream);
             Uri newFileUri = Uri.fromFile(file);
-            ExifWrapper exifWrapper = ImageUtils.getExifData(getContext(), bitmap, uri);
+            ExifWrapper exifWrapper = ImageUtils.getExifData(uri, getContext());
             exifWrapper.copyExif(newFileUri.getPath());
             return newFileUri;
-        } catch(Exception ex) {
-            throw ex;
         } finally {
             if(outStream != null) {
                 outStream.close();
@@ -350,21 +349,20 @@ public class CameraPlugin extends Plugin {
     /**
      * After processing the image, return the final result back to the caller.
      * @param call
-     * @param bitmap
      * @param uri
      */
-    private void returnResult(PluginCall call, Bitmap bitmap, Uri uri) {
+//    private void returnResult(PluginCall call, Bitmap bitmap, Uri uri) {
+    private void returnResult(PluginCall call, Uri uri) {
         try {
-            bitmap = prepareBitmap(bitmap, uri);
-        } catch (IOException e) {
+            ImageUtils.prepareBitmap(uri, settings);
+//            prepareBitmap(uri);
+        } catch (Exception e) {
             call.reject(UNABLE_TO_PROCESS_IMAGE);
             return;
         }
 
-        ExifWrapper exifWrapper = ImageUtils.getExifData(getContext(), bitmap, uri);
-
         if (settings.isAllowEditing() && !isEdited) {
-            editImage(call, bitmap, uri);
+//            editImage(call, bitmap, uri);
             return;
         }
 
@@ -379,22 +377,20 @@ public class CameraPlugin extends Plugin {
             }
         }
 
-        // Compress the final image and prepare for output to client
-        ByteArrayOutputStream bitmapOutputStream = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), bitmapOutputStream);
-        try {
-            uri = saveTemporaryImage(uri, bitmap);
-        } catch(Exception ex) {
-            call.reject("Error saving temp image", ex);
-            return;
-        }
-
         if (settings.getResultType() == CameraResultType.BASE64) {
-            returnBase64(call, exifWrapper, bitmapOutputStream);
+            JSObject data = getBase64Result(uri);
+            call.resolve(data);
         } else if (settings.getResultType() == CameraResultType.URI) {
-            returnFileURI(call, exifWrapper, uri);
+            try {
+                JSObject data = getFileUriResult(uri);
+                call.resolve(data);
+            } catch (Exception e) {
+                Logger.error(getLogTag(), IMAGE_FILE_SAVE_ERROR, e);
+                call.reject(IMAGE_FILE_SAVE_ERROR);
+            }
         } else if (settings.getResultType() == CameraResultType.DATAURL) {
-            returnDataUrl(call, exifWrapper, bitmapOutputStream);
+//            JSObject data = getDataUrlResult(bitmap, uri);
+//            call.resolve(data);
         } else {
             call.reject(INVALID_RESULT_TYPE_ERROR);
         }
@@ -405,35 +401,81 @@ public class CameraPlugin extends Plugin {
         imageEditedFileSavePath = null;
     }
 
-    private void returnFileURI(PluginCall call, ExifWrapper exifWrapper, Uri uri) {
-        JSObject ret = new JSObject();
-        ret.put("format", "jpeg");
-        ret.put("exif", exifWrapper.toJson());
-        ret.put("path", uri.toString());
-        ret.put("webPath", FileUtils.getPortablePath(getContext(), bridge.getLocalUrl(), uri));
-        call.resolve(ret);
+    private JSObject getFileUriResult(Uri uri) throws Exception {
+        //save the updated bitmap to temp
+        Bitmap bitmap = BitmapFactory.decodeFile(uri.getPath());
+        String filename = getNewFilename(uri);
+        File file = new File(getContext().getCacheDir(), filename);
+        OutputStream outStream = null;
+        try {
+            ExifWrapper exifWrapper = ImageUtils.getExifData(uri, getContext());
+            outStream = new FileOutputStream(file);
+            bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), outStream);
+            exifWrapper.copyExif(uri.getPath());
+            uri = Uri.fromFile(file);
+            JSObject ret = new JSObject();
+            ret.put("format", "jpeg");
+            ret.put("exif", exifWrapper.toJson());
+            ret.put("path", uri.toString());
+            ret.put("webPath", FileUtils.getPortablePath(getContext(), bridge.getLocalUrl(), uri));
+            return ret;
+        } finally {
+            if(outStream != null) {
+                outStream.close();
+            }
+        }
     }
 
-    /**
-     * Apply our standard processing of the bitmap, returning a new one and
-     * recycling the old one in the process
-     * @param bitmap
-     * @param imageUri
-     * @return
-     */
-    private Bitmap prepareBitmap(Bitmap bitmap, Uri imageUri) throws IOException {
-        if (settings.isShouldCorrectOrientation()) {
-            final Bitmap newBitmap = ImageUtils.correctOrientation(getContext(), bitmap, imageUri);
-            bitmap = replaceBitmap(bitmap, newBitmap);
-        }
+    private JSObject getDataUrlResult(Bitmap bitmap, Uri uri) {
+        ByteArrayOutputStream bitmapOutputStream = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), bitmapOutputStream);
+        ExifWrapper exifWrapper = ImageUtils.getExifData(uri, getContext());
 
-        if (settings.isShouldResize()) {
-            final Bitmap newBitmap = ImageUtils.resize(bitmap, settings.getWidth(), settings.getHeight());
-            bitmap = replaceBitmap(bitmap, newBitmap);
-        }
+        byte[] byteArray = bitmapOutputStream.toByteArray();
+        String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
 
-        return bitmap;
+        JSObject data = new JSObject();
+        data.put("format", "jpeg");
+        data.put("dataUrl", "data:image/jpeg;base64," + encoded);
+        data.put("exif", exifWrapper.toJson());
+        return data;
     }
+
+    private JSObject getBase64Result(Uri uri) {
+        Bitmap bitmap = BitmapFactory.decodeFile(uri.getPath());
+        ByteArrayOutputStream bitmapOutputStream = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, settings.getQuality(), bitmapOutputStream);
+        ExifWrapper exifWrapper = ImageUtils.getExifData(uri, getContext());
+
+        byte[] byteArray = bitmapOutputStream.toByteArray();
+        String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
+
+        JSObject data = new JSObject();
+        data.put("format", "jpeg");
+        data.put("base64String", encoded);
+        data.put("exif", exifWrapper.toJson());
+        return data;
+    }
+
+//    /**
+//     * Apply our standard processing of the bitmap, returning a new one and
+//     * recycling the old one in the process
+//     * @param uri
+//     * @return
+//     */
+//    private void prepareBitmap(Uri uri) throws Exception {
+//        if (settings.isShouldCorrectOrientation()) {
+//            ImageUtils.correctOrientation(uri);
+////            bitmap = replaceBitmap(bitmap, newBitmap);
+//        }
+//
+//        if (settings.isShouldResize()) {
+//            ImageUtils.resize(uri, settings.getWidth(), settings.getHeight());
+////            bitmap = replaceBitmap(bitmap, newBitmap);
+//        }
+//
+////        return bitmap;
+//    }
 
     private Bitmap replaceBitmap(Bitmap bitmap, final Bitmap newBitmap) {
         if (bitmap != newBitmap) {
@@ -441,28 +483,6 @@ public class CameraPlugin extends Plugin {
         }
         bitmap = newBitmap;
         return bitmap;
-    }
-
-    private void returnDataUrl(PluginCall call, ExifWrapper exif, ByteArrayOutputStream bitmapOutputStream) {
-        byte[] byteArray = bitmapOutputStream.toByteArray();
-        String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
-
-        JSObject data = new JSObject();
-        data.put("format", "jpeg");
-        data.put("dataUrl", "data:image/jpeg;base64," + encoded);
-        data.put("exif", exif.toJson());
-        call.resolve(data);
-    }
-
-    private void returnBase64(PluginCall call, ExifWrapper exif, ByteArrayOutputStream bitmapOutputStream) {
-        byte[] byteArray = bitmapOutputStream.toByteArray();
-        String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
-
-        JSObject data = new JSObject();
-        data.put("format", "jpeg");
-        data.put("base64String", encoded);
-        data.put("exif", exif.toJson());
-        call.resolve(data);
     }
 
     @Override
