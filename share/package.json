@@ -1,6 +1,6 @@
 {
-  "name": "@capacitor/share",
-  "version": "1.1.2",
+  "name": "@bunkr.official/share",
+  "version": "1.1.5",
   "description": "The Share API provides methods for sharing content in any sharing-enabled apps the user may have installed.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -13,14 +13,15 @@
     "ios/Plugin/",
     "CapacitorShare.podspec"
   ],
-  "author": "Ionic <hi@ionicframework.com>",
+  "author": "bunkr.official",
+  "contributor": "Ionic <hi@ionicframework.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ionic-team/capacitor-plugins.git"
+    "url": "git+https://github.com/trentbunkrlife/capacitor-plugins.git"
   },
   "bugs": {
-    "url": "https://github.com/ionic-team/capacitor-plugins/issues"
+    "url": "https://github.com/trentbunkrlife/capacitor-plugins/issues"
   },
   "keywords": [
     "capacitor",
@@ -78,5 +79,7 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "homepage": "https://bunkr.life",
+  "dependencies": {}
 }

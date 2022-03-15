@@ -21,6 +21,12 @@ export interface ShareOptions {
    */
   url?: string;
 
+
+  /**
+   * Set additional URLs to share multiple items at once
+   *
+   * @since 1.1.3
+   */
   additionalItems?: any;
 
   /**

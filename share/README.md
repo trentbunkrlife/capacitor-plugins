@@ -1,9 +1,11 @@
-# @capacitor/share
+# @bunkr.official/share
 
 The Share API provides methods for sharing content in any sharing-enabled apps the user may have installed.
 
 The Share API works on iOS, Android, and the Web (using the new [Web Share
 API](https://web.dev/web-share/)), though web support is currently spotty.
+
+This is a fork of the original Ionic share plugin which enables sharing of multiple files.
 
 ## Install
 
@@ -22,6 +24,7 @@ await Share.share({
   text: 'Really awesome thing you need to see right meow',
   url: 'http://ionicframework.com/',
   dialogTitle: 'Share with buddies',
+  additionalItems: ['url1.com','url2.com']
 });
 ```
 
@@ -93,11 +96,12 @@ Show a Share modal for sharing content with other apps
 
 #### ShareOptions
 
-| Prop              | Type                | Description                                                                | Since |
-| ----------------- | ------------------- | -------------------------------------------------------------------------- | ----- |
-| **`title`**       | <code>string</code> | Set a title for any message. This will be the subject if sharing to email  | 1.0.0 |
-| **`text`**        | <code>string</code> | Set some text to share                                                     | 1.0.0 |
-| **`url`**         | <code>string</code> | Set a URL to share, can be http, https or file:// URL                      | 1.0.0 |
-| **`dialogTitle`** | <code>string</code> | Set a title for the share modal. This option is only supported on Android. | 1.0.0 |
+| Prop                  | Type                | Description                                                                | Since |
+| --------------------- | ------------------- | -------------------------------------------------------------------------- | ----- |
+| **`title`**           | <code>string</code> | Set a title for any message. This will be the subject if sharing to email  | 1.0.0 |
+| **`text`**            | <code>string</code> | Set some text to share                                                     | 1.0.0 |
+| **`url`**             | <code>string</code> | Set a URL to share, can be http, https or file:// URL                      | 1.0.0 |
+| **`additionalItems`** | <code>any</code>    | Set additional URLs to share multiple items at once                        | 1.1.3 |
+| **`dialogTitle`**     | <code>string</code> | Set a title for the share modal. This option is only supported on Android. | 1.0.0 |
 
 </docgen-api>
