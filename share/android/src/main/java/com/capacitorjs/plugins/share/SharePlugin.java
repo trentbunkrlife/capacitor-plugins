@@ -8,17 +8,18 @@ import android.os.Build;
 import android.webkit.MimeTypeMap;
 import androidx.activity.result.ActivityResult;
 import androidx.core.content.FileProvider;
-import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+
+import org.json.JSONException;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import org.json.JSONException;
 
 @CapacitorPlugin(name = "Share")
 public class SharePlugin extends Plugin {
@@ -30,14 +31,16 @@ public class SharePlugin extends Plugin {
 
     @Override
     public void load() {
-        broadcastReceiver =
-            new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context context, Intent intent) {
-                    chosenComponent = intent.getParcelableExtra(Intent.EXTRA_CHOSEN_COMPONENT);
-                }
-            };
-        getActivity().registerReceiver(broadcastReceiver, new IntentFilter(Intent.EXTRA_CHOSEN_COMPONENT));
+        if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            broadcastReceiver =
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        chosenComponent = intent.getParcelableExtra(Intent.EXTRA_CHOSEN_COMPONENT);
+                    }
+                };
+            getActivity().registerReceiver(broadcastReceiver, new IntentFilter(Intent.EXTRA_CHOSEN_COMPONENT));
+        }
     }
 
     @ActivityCallback
@@ -65,11 +68,17 @@ public class SharePlugin extends Plugin {
             String title = call.getString("title", "");
             String text = call.getString("text");
             String url = call.getString("url");
-            JSArray files = call.getArray("files");
+            List<String> additionalItems = null;
+            try {
+                additionalItems = call.getArray("additionalItems").toList();
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+
             String dialogTitle = call.getString("dialogTitle", "Share");
 
-            if (text == null && url == null && (files == null || files.length() == 0)) {
-                call.reject("Must provide a URL or Message or files");
+            if (text == null && url == null) {
+                call.reject("Must provide a URL or Message");
                 return;
             }
 
@@ -77,87 +86,82 @@ public class SharePlugin extends Plugin {
                 call.reject("Unsupported url");
                 return;
             }
+            Intent intent = new Intent();
+            if (additionalItems.size() > 0) {
+                intent.setAction(Intent.ACTION_SEND_MULTIPLE);
+                ArrayList<Uri> uriList = new ArrayList<>();
+                String type = getMimeType(url);
+                if (type == null) {
+                    type = "*/*";
+                }
+                additionalItems.add(0, url);
+                for (String additionalUrl : additionalItems) {
+                    type = type.equals(getMimeType(additionalUrl)) ? type : "*/*";
 
-            Intent intent = new Intent(files != null && files.length() > 1 ? Intent.ACTION_SEND_MULTIPLE : Intent.ACTION_SEND);
+                    uriList.add(FileProvider.getUriForFile(
+                            getActivity(),
+                            getContext().getPackageName() + ".fileprovider",
+                            new File(Uri.parse(additionalUrl).getPath())));
 
-            if (text != null) {
-                // If they supplied both fields, concat them
-                if (url != null && isHttpUrl(url)) text = text + " " + url;
-                intent.putExtra(Intent.EXTRA_TEXT, text);
-                intent.setTypeAndNormalize("text/plain");
-            }
+                }
+                intent.setType(type);
+                intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uriList);
+                intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                intent.setAction(Intent.ACTION_SEND);
+                if (text != null) {
+                    // If they supplied both fields, concat them
+                    if (url != null && isHttpUrl(url)) text = text + " " + url;
+                    intent.putExtra(Intent.EXTRA_TEXT, text);
+                    intent.setTypeAndNormalize("text/plain");
+                }
 
-            if (url != null && isHttpUrl(url) && text == null) {
-                intent.putExtra(Intent.EXTRA_TEXT, url);
-                intent.setTypeAndNormalize("text/plain");
-            } else if (url != null && isFileUrl(url)) {
-                JSArray filesArray = new JSArray();
-                filesArray.put(url);
-                shareFiles(filesArray, intent, call);
+                if (url != null && isHttpUrl(url) && text == null) {
+                    intent.putExtra(Intent.EXTRA_TEXT, url);
+                    intent.setTypeAndNormalize("text/plain");
+                } else if (url != null && isFileUrl(url)) {
+                    String type = getMimeType(url);
+                    if (type == null) {
+                        type = "*/*";
+                    }
+                    intent.setType(type);
+                    Uri fileUrl = FileProvider.getUriForFile(
+                            getActivity(),
+                            getContext().getPackageName() + ".fileprovider",
+                            new File(Uri.parse(url).getPath())
+                    );
+                    intent.putExtra(Intent.EXTRA_STREAM, fileUrl);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        intent.setDataAndType(fileUrl, type);
+                    }
+                    intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                }
             }
 
             if (title != null) {
                 intent.putExtra(Intent.EXTRA_SUBJECT, title);
             }
 
-            if (files != null && files.length() != 0) {
-                shareFiles(files, intent, call);
+            Intent chooser = null;
+            if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                // requestCode parameter is not used. Providing 0
+                PendingIntent pi = PendingIntent.getBroadcast(
+                    getContext(),
+                    0,
+                    new Intent(Intent.EXTRA_CHOSEN_COMPONENT),
+                    PendingIntent.FLAG_MUTABLE
+                );
+                chooser = Intent.createChooser(intent, dialogTitle, pi.getIntentSender());
+                chosenComponent = null;
+            } else {
+                chooser = Intent.createChooser(intent, dialogTitle);
             }
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                flags = flags | PendingIntent.FLAG_MUTABLE;
-            }
-
-            // requestCode parameter is not used. Providing 0
-            PendingIntent pi = PendingIntent.getBroadcast(getContext(), 0, new Intent(Intent.EXTRA_CHOSEN_COMPONENT), flags);
-            Intent chooser = Intent.createChooser(intent, dialogTitle, pi.getIntentSender());
-            chosenComponent = null;
             chooser.addCategory(Intent.CATEGORY_DEFAULT);
             stopped = false;
             isPresenting = true;
             startActivityForResult(call, chooser, "activityResult");
         } else {
             call.reject("Can't share while sharing is in progress");
-        }
-    }
-
-    private void shareFiles(JSArray files, Intent intent, PluginCall call) {
-        List<Object> filesList;
-        ArrayList<Uri> fileUris = new ArrayList<>();
-        try {
-            filesList = files.toList();
-            for (int i = 0; i < filesList.size(); i++) {
-                String file = (String) filesList.get(i);
-                if (isFileUrl(file)) {
-                    String type = getMimeType(file);
-                    if (type == null || filesList.size() > 1) {
-                        type = "*/*";
-                    }
-                    intent.setType(type);
-
-                    Uri fileUrl = FileProvider.getUriForFile(
-                        getActivity(),
-                        getContext().getPackageName() + ".fileprovider",
-                        new File(Uri.parse(file).getPath())
-                    );
-                    fileUris.add(fileUrl);
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && filesList.size() == 1) {
-                        intent.setDataAndType(fileUrl, type);
-                        intent.putExtra(Intent.EXTRA_STREAM, fileUrl);
-                    }
-                } else {
-                    call.reject("only file urls are supported");
-                    return;
-                }
-            }
-            if (fileUris.size() > 1) {
-                intent.putExtra(Intent.EXTRA_STREAM, fileUris);
-            }
-            intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (Exception ex) {
-            call.reject(ex.getLocalizedMessage());
-            return;
         }
     }
 
